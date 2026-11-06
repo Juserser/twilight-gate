@@ -257,7 +257,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 Object.assign(window, { THREE, EffectComposer, RenderPass, UnrealBloomPass, ShaderPass, OutputPass });
 // 게임 코드는 js/ 의 일반 스크립트들이 전역 스코프를 함께 쓰며 차례로 실행된다.
 // (외부 모듈 파일은 file:// 로 열면 브라우저가 막기 때문에, 더블클릭으로도 열리게 일반 스크립트로 둔다)
-const FILES = ["config","core","art_heroes","art_world","assets","scene","art_monsters","actors","post","input","combat","monsters","berserker","skills","assassin","hawk","game","hud","ui","settings","world","gear","region2","region3","region4","region5","region6","raid","difficulty","tri","sets","trifarm","emblems","craft","style","bot","main","title","cloud"];
+const FILES = ["config","core","art_heroes","art_world","assets","scene","art_monsters","actors","post","input","combat","monsters","berserker","skills","assassin","hawk","game","hud","ui","settings","world","gear","region2","region3","region4","region5","region6","raid","difficulty","tri","sets","trifarm","emblems","craft","style","bot","main","title","cloud","coop"];
 for (const f of FILES) {
   if (window.SHEET_STOP) break;
   await new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'js/' + f + '.js'; s.onload = ok; s.onerror = () => no(new Error('js/' + f + '.js')); document.body.appendChild(s); });
