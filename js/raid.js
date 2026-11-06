@@ -97,6 +97,7 @@ function companionAI(dt) {
   let k = 0;
   for (let i = 0; i < party.length; i++) {
     if (i === active) continue; const c = party[i], idx = k++; if (c.down) continue;
+    if (idx >= (typeof coopAICount === 'function' ? coopAICount() : 2)) continue; // 협동: 사람이 늘면 AI 동료가 줄어든다
     // 대상: 관문 1은 기둥을 치는 촉수 먼저, 관문 2는 동료마다 다른 반쪽, 그 외 보스
     let tg = null;
     if (RAID.room === 0) tg = live.filter(m => m.kind === 'tendril').sort((a, b) => Math.hypot(a.x - c.x, a.z - c.z) - Math.hypot(b.x - c.x, b.z - c.z))[0];

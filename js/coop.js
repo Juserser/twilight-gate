@@ -3,12 +3,12 @@
 //  방장이 몬스터를 움직이고 0.1초마다 상태를 보낸다. 참가자는 그 상태를 받아 보여 준다.
 //  공격 패턴은 양쪽에서 같이 재생하고, 맞았는지는 각자 자기 캐릭터로 판정한다.
 //  참가자가 몬스터를 때리면 피해를 방장에게 보내고, 몬스터의 죽음은 방장이 알린다.
-//  레이드는 아직 함께 들어가지 않는다.
+//  레이드: 기둥 · 보호막 · 공용 부활 · 시간 · 관문 실패는 방장이 정하고 알린다. 사람이 늘면 AI 동료가 줄어든다.
 
 const COOP = { ch: null, code: '', host: false, on: false, status: '', me: Math.random().toString(36).slice(2, 10), peers: new Map(),
   nid: 0, allow: false, inBuild: false, remote: false, remoteHit: false, remotePat: false, remoteDie: false, roomAt: 0,
   sendT: 0, snapT: 0, flushT: 0, hits: [], dmgOut: [], sgOut: [] };
-const coopDun = () => COOP.on && DUN.on && DUN.d && !DUN.d.raid;
+const coopDun = () => COOP.on && DUN.on && !!DUN.d;
 const coopGuest = () => coopDun() && !COOP.host;
 const COOP_ST = ['spawn', 'idle', 'chase', 'wind', 'act', 'recover', 'stun', 'dead'];
 const r2 = v => Math.round(v * 100) / 100;
@@ -82,7 +82,7 @@ function coopRecv(o) {
     case 'dun': if (!COOP.host) coopFollowDun(o.di, o.df); break;
     case 'st': if (!COOP.host) { if (!DUN.on || DUN.di !== o.di) coopFollowDun(o.di, o.df); if (DUN.on && DUN.room !== o.rm) { COOP.remote = true; buildRoom(o.rm); COOP.remote = false; } } break;
     case 'room': if (coopDun() && o.rm !== DUN.room && o.di === DUN.di) fadeTo(() => { if (DUN.room === o.rm) return; COOP.remote = true; buildRoom(o.rm); COOP.remote = false; }); break;
-    case 'leave': if (!COOP.host && DUN.on && !DUN.d.raid) { COOP.remote = true; leaveDungeon(); COOP.remote = false; toast('방장이 던전을 나갔습니다', '마을로 돌아갑니다', '#9ad8ff'); } break;
+    case 'leave': if (!COOP.host && DUN.on) { COOP.remote = true; leaveDungeon(); COOP.remote = false; toast('방장이 던전을 나갔습니다', '마을로 돌아갑니다', '#9ad8ff'); } break;
     case 'snap': if (coopGuest() && o.rm === DUN.room) coopApplySnap(o.m); break;
     case 'sp': if (coopGuest() && o.rm === DUN.room && !monByCid(o.id) && MON[o.kind]) { COOP.allow = true; const m = spawnMon(o.kind, o.x, o.z, { aggro: true, hpMul: o.hm }); COOP.allow = false; m.cid = o.id; } break;
     case 'pat': if (coopGuest() && o.rm === DUN.room) { const m = monByCid(o.id); if (m && m.state !== 'dead' && PAT[o.k]) { clearTele(m); m.burrowed = false; m.sink = 0; COOP.remotePat = true; startPat(m, o.k, { x: o.tx, z: o.tz, down: false }); COOP.remotePat = false; } } break;
@@ -90,6 +90,9 @@ function coopRecv(o) {
     case 'cut': if (coopGuest() && o.rm === DUN.room) { const m = monByCid(o.id); if (m && m.state === 'wind') { clearTele(m); Object.assign(m, { state: 'recover', t: 0, recDur: 0.9, burrowed: false, sink: 0, flash: 0.15 }); } } break;
     case 'cutq': if (COOP.host && coopDun() && o.rm === DUN.room) { const m = monByCid(o.id); if (m) monInterrupt(m); } break;
     case 'dmg': if (COOP.host && coopDun() && o.rm === DUN.room) coopApplyDmg(o); break;
+    case 'rs': if (coopGuest() && o.rm === DUN.room) COOP.rs = o; break;
+    case 'rdown': if (COOP.host && coopDun() && raidOn() && o.rm === DUN.room && !DUN.cleared) { RAID.revives--; const p2 = COOP.peers.get(o.f); floaters.push({ x: p2 ? p2.x : 0, y: 3, z: p2 ? p2.z : 0, t: 0, text: RAID.revives >= 0 ? `공용 부활 ${RAID.revives}회 남음` : '부활 없음', crit: false, big: true, vx: 0, color: '#ff8a8a' }); } break;
+    case 'rfail': if (coopGuest() && raidOn() && o.rm === DUN.room) _coopRaidFail(o.why); break;
     case 'hx': if (coopGuest() && o.rm === DUN.room) for (const [id, d] of o.h) { const m = monByCid(id); if (m) { m.flash = 0.09; coopFloat(m, d); } } break;
   }
   if (o.t === 'p' && COOP.peers.size && !p.named) { p.named = true; renderCoop(); }
@@ -97,17 +100,18 @@ function coopRecv(o) {
 function coopFloat(m, d) { floaters.push({ x: m.x + (Math.random() - 0.5) * 0.6, y: m.y + m.lift + m.def.top + 0.2, z: m.z, t: 0, text: String(d), crit: false, vx: (Math.random() - 0.5) * 0.25, color: '#7ad8ff' }); }
 function coopSendState() { if (coopDun()) coopSend({ t: 'st', di: DUN.di, df: DUN.d.diff || 0, rm: DUN.room }); }
 function coopFollowDun(di, df) {
-  const d = DUNGEONS[di]; if (!d || d.raid) return;
-  DIFFSEL[d.id] = df || 0; COOP.remote = true;
+  const d = DUNGEONS[di]; if (!d) return;
+  if (!d.raid) DIFFSEL[d.id] = df || 0; COOP.remote = true;
   try { enterDungeon(di, true); } finally { COOP.remote = false; }
-  toast('함께 입장', d.name, '#9ad8ff');
+  if (DUN.on && DUN.di === di) toast('함께 입장', d.name, '#9ad8ff');
+  else coopSend({ t: 'chat', n: '알림', s: `${player.name}님은 아이템 레벨이 부족해 ${d.name}에 들어가지 못했습니다` });
 }
 // 방장의 몬스터 상태: 위치 · 체력 · 상태를 맞춘다. 방장에게 없는 몬스터는 지운다.
 function coopApplySnap(rows) {
   const seen = new Set();
-  for (const [id, x, z, hp, st, dir] of rows) {
+  for (const [id, x, z, hp, st, dir, sg, iv] of rows) {
     const m = monByCid(id); seen.add(id); if (!m) continue;
-    m.sx = x; m.sz = z; m.shp = hp; m.sst = COOP_ST[st]; m.sdir = dir;
+    m.sx = x; m.sz = z; m.shp = hp; m.sst = COOP_ST[st]; m.sdir = dir; if (sg != null) m.stagger = sg; m.invuln = !!iv;
   }
   if (performance.now() - COOP.roomAt > 1500) for (const m of [...mons]) if (m.cid != null && !seen.has(m.cid) && m.state !== 'dead') removeMon(m);
 }
@@ -115,7 +119,7 @@ function coopApplyDmg(o) {
   COOP.remoteHit = true;
   try {
     for (const [id, v] of o.s || []) { const m = monByCid(id); if (m && m.state !== 'dead') monStagger(m, v); }
-    for (const [id, d, nx, nz] of o.h || []) { const m = monByCid(id); if (m && m.state !== 'dead') { coopFloat(m, d); monHurt(m, d, nx / 100, nz / 100); } }
+    for (const [id, d, nx, nz] of o.h || []) { const m = monByCid(id); if (m && m.state !== 'dead' && !m.invuln) { coopFloat(m, d); monHurt(m, d, nx / 100, nz / 100); } }
   } finally { COOP.remoteHit = false; }
 }
 
@@ -216,10 +220,10 @@ updateMon = function (m, dt) {
 const _coopEnterDungeon = enterDungeon;
 enterDungeon = function (di, free) {
   const raid = !!DUNGEONS[di].raid;
-  if (COOP.on && !COOP.host && !COOP.remote && !raid) { toast('방장이 던전을 고릅니다', '방장이 들어가면 함께 들어갑니다', '#9ad8ff'); toggleWin('wDun', false); return; }
+  if (COOP.on && !COOP.host && !COOP.remote) { toast('방장이 던전을 고릅니다', '방장이 들어가면 함께 들어갑니다', '#9ad8ff'); toggleWin('wDun', false); return; }
   const can = free || lampLeft() > 0;
   _coopEnterDungeon(di, free);
-  if (can && COOP.on && COOP.host && !raid) coopSend({ t: 'dun', di, df: DIFFSEL[DUNGEONS[di].id] || 0 });
+  if ((raid ? DUN.on && DUN.di === di : can) && COOP.on && COOP.host) coopSend({ t: 'dun', di, df: DIFFSEL[DUNGEONS[di].id] || 0 });
 };
 const _coopLeaveDungeon = leaveDungeon;
 leaveDungeon = function () {
@@ -292,7 +296,11 @@ updateWorld = function (dt) {
   if (!coopDun()) { COOP.hits.length = COOP.dmgOut.length = COOP.sgOut.length = 0; return; }
   if (COOP.host && now - COOP.snapT > 100) {
     COOP.snapT = now;
-    coopSend({ t: 'snap', rm: DUN.room, m: mons.filter(m => m.cid != null && m.state !== 'dead').map(m => [m.cid, r2(m.x), r2(m.z), Math.round(m.hp), COOP_ST.indexOf(m.state), r2(m.dir)]) });
+    coopSend({ t: 'snap', rm: DUN.room, m: mons.filter(m => m.cid != null && m.state !== 'dead').map(m => [m.cid, r2(m.x), r2(m.z), Math.round(m.hp), COOP_ST.indexOf(m.state), r2(m.dir), Math.round(m.stagger || 0), m.invuln ? 1 : 0]) });
+  }
+  if (COOP.host && raidOn() && now - (COOP.rsT || 0) > 250) {
+    COOP.rsT = now;
+    coopSend({ t: 'rs', rm: DUN.room, rt: r2(RAID.t), rv: RAID.revives, sh: r2(RAID.shieldT), en: DUN.enrage || 1, pl: RAID.pillars.map(p => [Math.round(p.hp), Math.round(p.charge), p.dead ? 1 : 0, r2(p.rt)]) });
   }
   if (now - COOP.flushT > 100) {
     COOP.flushT = now;
@@ -342,7 +350,7 @@ function renderCoop() {
     <div class="dim" style="text-align:center;margin-bottom:8px">${COOP.host ? '친구가 이 코드로 참가하면 됩니다. 방장이 던전에 들어가면 모두 함께 들어갑니다.' : '방장이 던전에 들어가면 자동으로 함께 들어갑니다.'}</div>
     ${mems.join('')}
     ${COOP.status ? `<div class="st">${esc(COOP.status)}</div>` : ''}
-    <div class="dim" style="margin-top:8px">채팅(Enter)은 동료에게도 보입니다. 레이드는 아직 각자 들어갑니다.</div>
+    <div class="dim" style="margin-top:8px">채팅(Enter)은 동료에게도 보입니다. 레이드에서는 사람이 늘어난 만큼 AI 동료가 빠집니다.</div>
     <div class="row" style="justify-content:flex-end"><button class="b2" data-a="copy">코드 복사</button><button class="b2" data-a="leave">방 나가기</button></div>`;
   coopBd.querySelector('[data-a=copy]').onclick = () => { try { navigator.clipboard.writeText(COOP.code); toast('복사했습니다', COOP.code, '#9ad8ff'); } catch (e) {} };
   coopBd.querySelector('[data-a=leave]').onclick = () => coopLeave();
@@ -353,9 +361,57 @@ setInterval(() => { if (COOP.on) renderCoop(); }, 2000);
 // 시험용: ?coop=CODE (방장) · ?coopj=CODE (참가)
 {
   const q = new URLSearchParams(location.search);
-  if (q.get('coop')) coopJoin(q.get('coop').toUpperCase(), true).then(() => { if (q.get('cdun')) setTimeout(() => enterDungeon(+q.get('cdun'), true), 2500); });
+  if (q.get('coop')) coopJoin(q.get('coop').toUpperCase(), true).then(() => { if (q.get('cdun')) setTimeout(() => enterDungeon(q.get('cdun') === 'raid' ? DUNGEONS.findIndex(d => d.raid) : +q.get('cdun'), true), 2500); });
   else if (q.get('coopj')) coopJoin(q.get('coopj').toUpperCase(), false);
-  if (q.get('coophit')) setInterval(() => { const m = mons.find(m => m.cid != null && m.state !== 'dead' && m.state !== 'spawn'); if (DUN.on && m) hitTarget(m.tg, +q.get('coophit'), m.x - 1, m.z, '#ffffff'); }, 700);
+  if (q.get('coophit')) setInterval(() => { const m = mons.find(m => m.cid != null && m.state !== 'dead' && m.state !== 'spawn' && !m.invuln); if (DUN.on && m) hitTarget(m.tg, +q.get('coophit'), m.x - 1, m.z, '#ffffff'); }, 700);
   if (q.get('coopexit')) setInterval(() => { if (DUN.on && exitGate.open) { party[active].x = exitGate.x; party[active].z = exitGate.z; } }, 500);
-  if (q.get('coopdbg')) setInterval(() => console.log('COOP', JSON.stringify({ host: COOP.host, on: COOP.on, peers: [...COOP.peers.values()].map(p => [p.name, p.key, p.ar, p.rm, !!(p.av && p.av.mesh.visible)]), dun: DUN.on, room: DUN.room, hp: Math.round(party[active].hp), cleared: DUN.cleared, mons: mons.map(m => m.cid + ':' + Math.round(m.hp) + ':' + m.state) })), 2000);
+  if (q.get('coopdbg')) setInterval(() => console.log('COOP', JSON.stringify({ host: COOP.host, on: COOP.on, peers: [...COOP.peers.values()].map(p => [p.name, p.key, p.ar, p.rm, !!(p.av && p.av.mesh.visible)]), dun: DUN.on, room: DUN.room, hp: Math.round(party[active].hp), raid: raidOn() ? [RAID.revives, r2(RAID.shieldT), RAID.pillars.map(p => Math.round(p.charge)).join('/'), coopAICount(), Math.round(RAID.t)] : 0, cleared: DUN.cleared, mons: mons.map(m => m.cid + ':' + Math.round(m.hp) + ':' + m.state) })), 2000);
 }
+
+// ---- 레이드 ----
+// 함께 있는 사람 수만큼 AI 동료를 뺀다 (참가자는 AI 동료 없음)
+function coopAICount() {
+  if (!COOP.on || !raidOn()) return 2;
+  if (!COOP.host) return 0;
+  let n = 1; const now = performance.now();
+  for (const p of COOP.peers.values()) if (p.ar === 'dungeon' && p.dk === DUN.di && now - p.last < 5000) n++;
+  return Math.max(0, 3 - n);
+}
+const _coopRaidFail = raidFail;
+raidFail = function (why) { if (coopDun() && COOP.host) coopSend({ t: 'rfail', rm: DUN.room, why }); return _coopRaidFail(why); };
+// 참가자의 레이드 갱신: 스스로 실패하거나 촉수를 부르지 않고, 방장이 보낸 상태를 따른다
+function coopGuestRaid(dt) {
+  if (RAID.room !== DUN.room) raidSetup();
+  const A = party[active];
+  if (!DUN.cleared) RAID.t += dt;
+  if (A.down && !RAID.downed && !DUN.cleared) coopSend({ t: 'rdown', rm: DUN.room });
+  RAID.downed = A.down; RAID.fail = false;
+  if (DUN.cleared) { if (!RAID.rewarded) { RAID.rewarded = true; raidReward(DUN.room); } return; }
+  RAID.rewarded = false;
+  const S = COOP.rs; if (!S || S.rm !== DUN.room) return;
+  RAID.t = S.rt; RAID.revives = S.rv;
+  const bosses = mons.filter(m => m.def.raidBoss && m.state !== 'dead');
+  if (DUN.room === 0) {
+    RAID.pillars.forEach((p, i) => {
+      const s = S.pl[i]; if (!s) return;
+      const dead = !!s[2];
+      if (dead && !p.dead) { p.mesh.visible = false; voidBurst(p.x, p.z, 30); toast('빛 기둥이 무너졌다', '8초 뒤 다시 세워진다', '#ff8ad8'); }
+      if (!dead && p.dead) p.mesh.visible = true;
+      p.hp = s[0]; p.charge = s[1]; p.dead = dead; p.rt = s[3];
+      if (p.dead) { p.ring.material.opacity = 0.15; return; }
+      p.ring.material.opacity = 0.4 + 0.4 * (p.charge / 100); p.ring.scale.setScalar(0.6 + p.charge / 250);
+      if (Math.random() < dt * (4 + p.charge / 10)) glow.emit({ x: p.x + (Math.random() - 0.5) * 0.6, y: 0.2 + Math.random() * 3, z: p.z, vy: 1.5, life: 0.6, c: [2.4, 2.4, 2.8], size: PX });
+    });
+    if (S.sh > 0 && RAID.shieldT <= 0) { flashW = 0.4; flashCol = '240,240,255'; shake = 0.6; RAID.pillars.forEach(p => pillar(p.x, p.z, 0.6, 10, [2, 2, 2.6], 0.8)); toast('보호막 붕괴!', '15초 동안 보스를 공격하라', '#ffffff'); }
+    if (S.sh <= 0 && RAID.shieldT > 0) toast('보호막 복구', '기둥을 다시 채워라', '#c8a0ff');
+    RAID.shieldT = S.sh;
+    const maw = bosses[0]; if (maw && maw.invuln && Math.random() < dt * 20) { const a = Math.random() * TAU; glow.emit({ x: maw.x + Math.cos(a) * 2.6, y: 1 + Math.random() * 4, z: maw.z + Math.sin(a) * 2, life: 0.4, c: [1.6, 1.6, 2.6], size: PX * 1.2 }); }
+  } else if (DUN.room === 1) {
+    const enr = S.en > 1;
+    if (bosses.length && enr !== !!bosses[0].enr && enr) toast('갈라진 자 광폭!', '체력 차이가 10%를 넘었다', '#ff6a6a');
+    for (const m of bosses) m.enr = enr;
+    DUN.enrage = S.en;
+    if (enr && Math.random() < dt * 30) for (const m of bosses) glow.emit({ x: m.x + (Math.random() - 0.5) * 2, y: Math.random() * 5, z: m.z, vy: 2, life: 0.4, c: [3, 0.4, 0.4], size: PX * 1.3 });
+  }
+}
+{ const i = REGION.update.indexOf(updateRaid); if (i >= 0) REGION.update[i] = dt => (coopGuest() && raidOn() ? coopGuestRaid(dt) : updateRaid(dt)); }
